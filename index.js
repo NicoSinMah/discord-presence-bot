@@ -34,23 +34,56 @@ const client = new Client({
   partials: [Partials.GuildMember, Partials.User],
 });
 
-function pickPrimaryActivity(activities) {
-  // Ignore the "Custom Status" activity type when a real game/app
-  // activity is also present; otherwise fall back to it.
-  const nonCustom = activities.find((a) => a.type !== 4);
-  return nonCustom || activities[0] || null;
+// Activities we never want to surface as "what I'm doing" on the site,
+// because they're already covered by the YouTube Music card (or are some
+// other music/streaming service reporting itself to Discord).
+const IGNORED_ACTIVITY_TYPES = new Set([
+  2, // "Listening to ..." (Spotify, Apple Music, etc.)
+  4, // Custom status
+]);
+const IGNORED_ACTIVITY_NAME_PATTERNS = [
+  /youtube\s*music/i,
+  /\bspotify\b/i,
+  /apple\s*music/i,
+  /soundcloud/i,
+  /\byoutube\b/i,
+];
+
+function isIgnoredActivity(activity) {
+  if (!activity) return true;
+  if (IGNORED_ACTIVITY_TYPES.has(activity.type)) return true;
+  const name = activity.name || '';
+  return IGNORED_ACTIVITY_NAME_PATTERNS.some((pattern) => pattern.test(name));
 }
 
-async function pushPresence(presence) {
+function pickPrimaryActivity(activities) {
+  // Only ever surface a real game/app activity (Playing, Streaming,
+  // Watching, Competing). Music and custom-status activities are
+  // filtered out entirely instead of being used as a fallback.
+  return activities.find((a) => !isIgnoredActivity(a)) || null;
+}
+
+async function pushPresence(presence, member) {
   const status = presence?.status || 'offline';
   const activity = presence ? pickPrimaryActivity(presence.activities || []) : null;
+
+  // The user's Discord avatar — used as the card photo whenever there's
+  // no game/app open to show artwork for instead.
+  const avatarUrl =
+    member?.displayAvatarURL?.({ extension: 'png', size: 128 }) ||
+    presence?.member?.displayAvatarURL?.({ extension: 'png', size: 128 }) ||
+    null;
 
   const row = {
     id: 1,
     status,
     activity_name: activity?.name || null,
     activity_details: activity?.details || activity?.state || null,
+    // Artwork for whatever game/app is currently open.
     large_image_url: activity?.assets?.largeImageURL?.() || null,
+    // Discord profile picture, used as the fallback photo when no
+    // game/app activity is open.
+    avatar_url: avatarUrl,
     updated_at: new Date().toISOString(),
   };
 
@@ -69,12 +102,12 @@ client.once('ready', async () => {
   const member = await guild.members.fetch(DISCORD_USER_ID);
 
   // Push the current state immediately on startup.
-  await pushPresence(member.presence);
+  await pushPresence(member.presence, member);
 });
 
 client.on('presenceUpdate', async (_oldPresence, newPresence) => {
   if (!newPresence || newPresence.userId !== DISCORD_USER_ID) return;
-  await pushPresence(newPresence);
+  await pushPresence(newPresence, newPresence.member);
 });
 
 client.login(DISCORD_BOT_TOKEN);
